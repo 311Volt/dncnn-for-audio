@@ -5,6 +5,7 @@ import random
 import sys
 import getopt
 import time
+import argparse
 
 
 import matplotlib.pyplot as plt
@@ -269,8 +270,8 @@ def train(dataset_dir):
         .prefetch(tf.data.AUTOTUNE) \
         .batch(batch_size)
 
-    # model = dncnn_audio(16, 48)
-    model = keras.models.load_model("nrcnn.base.keras")
+    model = dncnn_audio(16, 48)
+    # model = keras.models.load_model("nrcnn.base.keras")
     # model = stupid_model(10)
 
     model.summary()
@@ -333,7 +334,7 @@ def denoise_blocks(model, blocks: np.ndarray): # blocks: batch-chunk-bin-channel
 
 
 
-def load_reference_noise(filename):
+def load_reference_noise(filename, noise_floor):
     if not os.path.exists(filename):
         return None
     fftsize = dct4stream.DEFAULT_DCT4_CFG.fft_size
@@ -345,13 +346,13 @@ def load_reference_noise(filename):
                 windows.append(window)
     output = np.std(windows, axis=0)
 
-    noise_floor = -51.50
+    noise_floor = -noise_floor
     ref_value = np.std(scipy.fftpack.dct(np.ones((fftsize,)) * dB(noise_floor) * scipy.signal.windows.blackmanharris(fftsize), type=4, norm='ortho'))
 
     output = output / ref_value
     return output
 
-def use(audio_filename, reference_noise_fn=None):
+def use(input_file, output_file, ref_noise_file=None, noise_floor=50):
 
     model_path = "nrcnn.keras"
 
@@ -359,15 +360,15 @@ def use(audio_filename, reference_noise_fn=None):
         model_path = os.getenv("DNCNN_AUDIO_MODEL")
 
     model: keras.Model = keras.models.load_model(model_path)
-    reference_noise = load_reference_noise(reference_noise_fn)
+    reference_noise = load_reference_noise(ref_noise_file, noise_floor)
     prev_block = None
     end = False
-    input_path = pathlib.Path(audio_filename)
-    output_path = input_path.with_stem(input_path.stem + ".denoised")
+    input_path = pathlib.Path(input_file)
+    output_path = output_file or input_path.with_stem(input_path.stem + ".denoised")
 
 
     with dct4stream2.AudioOutputDCT4(output_path) as output:
-        for blocks in itertools.batched(dct4stream2.AudioInputDCT4(audio_filename), 8):
+        for blocks in itertools.batched(dct4stream2.AudioInputDCT4(input_file), 8):
             inp_blocks = np.array(blocks) / reference_noise
             denoised_blocks = denoise_blocks(model, inp_blocks)
             denoised_blocks *= reference_noise
@@ -376,27 +377,76 @@ def use(audio_filename, reference_noise_fn=None):
 
 
 def entry():
-    dataset_dir = None
-    audio_file = None
-    dataset_source = None
-    reference_noise = None
-    opts, args = getopt.getopt(sys.argv[1:], "i:a:d:n:", ["idir=", "infile=", "dssrc=", "refnoise="])
-    for opt, arg in opts:
-        if opt in ("-i", "--idir"):
-            dataset_dir = arg
-        if opt in ("-a", "--infile"):
-            audio_file = arg
-        if opt in ("-d", "--dssrc"):
-            dataset_source = arg
-        if opt in ("-n", "--refnoise"):
-            reference_noise = arg
-    if dataset_dir is not None:
-        if dataset_source is not None:
-            preprocess_dataset(dataset_source, dataset_dir)
-        else:
-            train(dataset_dir)
-    elif audio_file is not None:
-        use(audio_file, reference_noise)
+
+    arg_parser = argparse.ArgumentParser(
+        prog="DnCNN for Audio",
+        description="This script offers a facility for training and using DnCNN-like models for audio restoration applications."
+    )
+
+    arg_parser.add_argument(
+        "--preprocessing-input",
+        help="Enables preprocessing mode and specifies the training set folder with audio data"
+    )
+    arg_parser.add_argument(
+        "--preprocessing-output",
+        help="In preprocessing mode, this specifies the path where the preprocessed dataset will be written."
+    )
+    arg_parser.add_argument(
+        "-i", "--input",
+        help="Enables inference mode and specifies the input file to denoise."
+    )
+    arg_parser.add_argument(
+        "-o", "--output",
+        help="In inference mode, this specifies the path to the denoised output file."
+    )
+    arg_parser.add_argument(
+        "--train",
+        help="Enables training mode and specifies the training dataset directory."
+    )
+    arg_parser.add_argument(
+        "-n", "--noise-print",
+        help="In inference mode, this specifies the noise print that will be used for equalization."
+    )
+    arg_parser.add_argument(
+        "--noise-floor",
+        help="In inference mode, this specifies the noise floor in negative dB after correction. Default is 50.",
+        type=float,
+        default=50
+    )
+    args = arg_parser.parse_args()
+
+    if "preprocessing_input" in args:
+        preprocess_dataset(args.preprocessing_input, args.preprocessing_output)
+    elif "input" in args:
+        ref_noise = None
+        if "reference_noise" in args:
+            ref_noise = args["reference_noise"]
+        use(args.input, args['output'], ref_noise, args.noise_print)
+    elif "train" in args:
+        train(args.train)
+
+
+    # dataset_dir = None
+    # audio_file = None
+    # dataset_source = None
+    # reference_noise = None
+    # opts, args = getopt.getopt(sys.argv[1:], "i:a:d:n:", ["idir=", "infile=", "dssrc=", "refnoise="])
+    # for opt, arg in opts:
+    #     if opt in ("-i", "--idir"):
+    #         dataset_dir = arg
+    #     if opt in ("-a", "--infile"):
+    #         audio_file = arg
+    #     if opt in ("-d", "--dssrc"):
+    #         dataset_source = arg
+    #     if opt in ("-n", "--refnoise"):
+    #         reference_noise = arg
+    # if dataset_dir is not None:
+    #     if dataset_source is not None:
+    #         preprocess_dataset(dataset_source, dataset_dir)
+    #     else:
+    #         train(dataset_dir)
+    # elif audio_file is not None:
+    #     use(audio_file, reference_noise)
 
 
 if __name__ == "__main__":
